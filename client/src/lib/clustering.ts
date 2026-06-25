@@ -34,13 +34,24 @@ export interface ClusteringResult {
 
 export const SINGLETON_KEY = -1;
 const BLACK = "#111111";
-const TOP_N = 10;
+const TOP_N = 100;
 
-// Distinct, readable-on-white palette for the 10 largest clusters.
+// Curated, maximally-distinct colors for the largest clusters.
 const PALETTE = [
   "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f",
   "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#1f9e89",
 ];
+
+// Color for a cluster's size rank. The first 10 use the curated palette; the
+// rest get a golden-angle hue spread (many will look similar past ~20, which is
+// expected when coloring up to 100 clusters).
+function rankColor(rank: number): string {
+  if (rank < PALETTE.length) return PALETTE[rank];
+  const hue = (rank * 137.508) % 360;
+  const sat = 60 + (rank % 3) * 10; // 60 / 70 / 80
+  const light = 45 + (rank % 2) * 9; // 45 / 54
+  return `hsl(${hue.toFixed(1)}, ${sat}%, ${light}%)`;
+}
 
 // Deterministic RNG so the same filtered graph always yields the same partition.
 function mulberry32(seed: number): () => number {
@@ -139,7 +150,7 @@ export function clusterGraph(nodes: ClusterNodeInput[], edges: EdgeInput[]): Clu
 
   real.forEach(([id, pmids], rank) => {
     const colored = rank < TOP_N;
-    const color = colored ? PALETTE[rank] : BLACK;
+    const color = colored ? rankColor(rank) : BLACK;
     const label = labelFor(pmids, titleTokens, globalDf, totalDocs);
     result.clusters.push({ id, label, color, size: pmids.length, colored });
     for (const pmid of pmids) result.byPmid.set(pmid, { community: id, color, label });

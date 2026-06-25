@@ -39,6 +39,8 @@ export function CitationGraph({
   const [hideUnconnected, setHideUnconnected] = useState(true);
   const [hiddenClusters, setHiddenClusters] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<GraphNode | null>(null);
+  // Custom tooltip for cluster names (native title has an un-tunable delay).
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
@@ -208,6 +210,8 @@ export function CitationGraph({
     setBothMin(clampMin(digits));
   };
 
+  const selectedCluster = selected ? clustering.byPmid.get(selected.pmid) : undefined;
+
   return (
     <div className="graph-wrap">
       <div className="toolbar">
@@ -317,7 +321,9 @@ export function CitationGraph({
                     type="button"
                     className="cluster-main"
                     onClick={() => centerCluster(c.id)}
-                    title={c.label}
+                    onMouseEnter={(e) => setTip({ text: c.label, x: e.clientX, y: e.clientY })}
+                    onMouseMove={(e) => setTip({ text: c.label, x: e.clientX, y: e.clientY })}
+                    onMouseLeave={() => setTip(null)}
                   >
                     <span className="swatch" style={{ backgroundColor: c.color }} />
                     <span className="cluster-label">{c.label}</span>
@@ -346,8 +352,23 @@ export function CitationGraph({
             <a className="modal-title" href={selected.url} target="_blank" rel="noreferrer">
               {selected.title || "(untitled)"}
             </a>
-            <p className="hint">Opens on PubMed ↗</p>
+            {/* <p className="hint">Opens on PubMed ↗</p> */}
+            {selectedCluster && (
+              <p className="modal-cluster">
+                <span className="swatch" style={{ backgroundColor: selectedCluster.color }} />
+                {selectedCluster.label}
+              </p>
+            )}
           </div>
+        </div>
+      )}
+
+      {tip && (
+        <div
+          className="hover-tip"
+          style={{ left: Math.min(tip.x + 12, window.innerWidth - 292), top: tip.y + 14 }}
+        >
+          {tip.text}
         </div>
       )}
     </div>
