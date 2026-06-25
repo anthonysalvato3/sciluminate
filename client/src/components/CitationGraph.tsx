@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { api } from "../api";
 import type { GraphNode, GraphResponse } from "../types";
+import { clusterGraph, type ClusteringResult } from "../lib/clustering";
 
 // react-force-graph mutates node/link objects in place (positions on nodes,
 // resolved refs on links), so allow extras.
@@ -10,6 +11,8 @@ interface FGLink {
   source: string | FGNode;
   target: string | FGNode;
 }
+
+const FALLBACK_COLOR = "#111111";
 
 // force-graph draws each node with radius = sqrt(nodeVal) * nodeRelSize. With
 // nodeRelSize=1, feeding val = r² makes the radius exactly r. We want radius to
@@ -30,9 +33,11 @@ export function CitationGraph({
   const [data, setData] = useState<GraphResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [minCitations, setMinCitations] = useState(0);
+  const [minCitations, setMinCitations] = useState(0); // instant: slider + box
   const [minText, setMinText] = useState("0"); // controlled string for the number box
+  const [activeMin, setActiveMin] = useState(0); // debounced: drives graph + clustering
   const [hideUnconnected, setHideUnconnected] = useState(true);
+  const [hiddenClusters, setHiddenClusters] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<GraphNode | null>(null);
 
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -65,6 +70,13 @@ export function CitationGraph({
     return () => ro.disconnect();
   }, []);
 
+  // Debounce the threshold that drives the graph + clustering, so dragging the
+  // slider doesn't re-run Louvain on every tick (the box itself stays instant).
+  useEffect(() => {
+    const t = setTimeout(() => setActiveMin(minCitations), 250);
+    return () => clearTimeout(t);
+  }, [minCitations]);
+
   // Stable node objects keyed by pmid. force-graph stores each node's x/y on the
   // object, so we reuse the same objects (never clone) across re-renders.
   const allNodes = useMemo(() => {
@@ -73,10 +85,9 @@ export function CitationGraph({
     return m;
   }, [data]);
 
-  // The set of nodes/links the *simulation* lays out. This only changes when the
-  // data or the "hide unconnected" structural choice changes — NOT when the
-  // min-citations slider moves. The slider is applied via visibility below, which
-  // is a pure repaint and never restarts (jolts) the layout.
+  // The set of nodes/links the *simulation* lays out. Only changes with the data
+  // or the "hide unconnected" choice — never with the slider — so filtering and
+  // clustering never restart (jolt) the layout.
   const graphData = useMemo(() => {
     if (!data) return { nodes: [] as FGNode[], links: [] as FGLink[] };
     const links: FGLink[] = data.edges.map((e) => ({ source: e.source, target: e.target }));
@@ -93,20 +104,50 @@ export function CitationGraph({
     return { nodes, links };
   }, [data, allNodes, hideUnconnected]);
 
+  // Community detection on the *active* subgraph (papers passing the threshold).
+  // Recomputes when the data or the debounced threshold changes.
+  const clustering = useMemo<ClusteringResult>(() => {
+    if (!data) return { byPmid: new Map(), clusters: [] };
+    const active = graphData.nodes.filter((n) => (n.citationCount as number) >= activeMin);
+    return clusterGraph(
+      active.map((n) => ({
+        pmid: n.pmid,
+        title: String(n.title ?? ""),
+        citationCount: n.citationCount as number,
+      })),
+      data.edges
+    );
+  }, [data, graphData, activeMin]);
+
+  // Cluster ids/membership change on each recompute, so old visibility toggles no
+  // longer map — reset them whenever the clustering changes.
+  useEffect(() => {
+    setHiddenClusters(new Set());
+  }, [clustering]);
+
   const maxCitations = useMemo(
     () => (data ? data.nodes.reduce((m, n) => Math.max(m, n.citationCount), 0) : 0),
     [data]
   );
 
-  // Counts for the readout — recomputed cheaply as the slider moves.
+  const isVisible = (pmid: string): boolean => {
+    const a = clustering.byPmid.get(pmid);
+    return !!a && !hiddenClusters.has(a.community);
+  };
+
+  // Counts for the readout (respect threshold + hidden clusters).
   const shown = useMemo(() => {
-    const nodes = graphData.nodes.filter((n) => n.citationCount >= minCitations);
-    const ids = new Set(nodes.map((n) => n.pmid));
-    const links = graphData.links.filter(
-      (l) => ids.has(endpointId(l.source)) && ids.has(endpointId(l.target))
-    );
-    return { nodes: nodes.length, links: links.length };
-  }, [graphData, minCitations]);
+    let nodes = 0;
+    for (const a of clustering.byPmid.values()) if (!hiddenClusters.has(a.community)) nodes++;
+    let links = 0;
+    if (data)
+      for (const e of data.edges) {
+        const s = clustering.byPmid.get(e.source);
+        const t = clustering.byPmid.get(e.target);
+        if (s && t && !hiddenClusters.has(s.community) && !hiddenClusters.has(t.community)) links++;
+      }
+    return { nodes, links };
+  }, [clustering, hiddenClusters, data]);
 
   // Spread the cluster out so it reads as a network, not a hairball. Re-applied
   // when the simulation set changes (data or hide-unconnected), not on filtering.
@@ -120,8 +161,30 @@ export function CitationGraph({
     fg.d3ReheatSimulation?.();
   }, [graphData]);
 
-  const citationOf = (ep: string | FGNode): number =>
-    typeof ep === "object" ? (ep.citationCount ?? 0) : (allNodes.get(ep)?.citationCount ?? 0);
+  const toggleCluster = (id: number) =>
+    setHiddenClusters((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const centerCluster = (id: number) => {
+    // Make sure it's visible before framing it.
+    setHiddenClusters((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    requestAnimationFrame(() =>
+      fgRef.current?.zoomToFit(
+        600,
+        60,
+        (n) => clustering.byPmid.get((n as FGNode).pmid)?.community === id
+      )
+    );
+  };
 
   // Slider and number input share this range; the number input is clamped so a
   // typed value always maps to a valid slider position.
@@ -131,16 +194,14 @@ export function CitationGraph({
     if (!Number.isFinite(v)) return 0;
     return Math.min(Math.max(0, v), sliderMax);
   };
-  // Keep slider and text box in lockstep; setting minText to String(v) drops any
-  // leading zeros and reflects clamping.
   const setBothMin = (v: number) => {
     setMinCitations(v);
     setMinText(String(v));
   };
   const handleMinText = (raw: string) => {
-    const digits = raw.replace(/\D/g, ""); // digits only
+    const digits = raw.replace(/\D/g, "");
     if (digits === "") {
-      setMinText(""); // allow an empty field while editing
+      setMinText("");
       setMinCitations(0);
       return;
     }
@@ -185,37 +246,87 @@ export function CitationGraph({
 
       {error && <div className="banner error">{error}</div>}
 
-      <div className="graph-canvas" ref={wrapRef}>
-        {loading ? (
-          <div className="empty">Loading citation data… (first load fetches from NIH iCite)</div>
-        ) : !data || data.nodes.length === 0 ? (
-          <div className="empty">No papers yet for this disease.</div>
-        ) : (
-          <>
-            {shown.nodes === 0 && <div className="empty">No papers match the current filters.</div>}
-            <ForceGraph2D
-              ref={fgRef}
-              width={size.width}
-              height={size.height}
-              graphData={graphData}
-              nodeId="pmid"
-              nodeLabel={(n) => String((n as FGNode).title ?? "")}
-              nodeColor={() => "#2e9e5b"}
-              nodeRelSize={1}
-              nodeVal={(n) => nodeValFromCount((n as FGNode).citationCount as number)}
-              nodeVisibility={(n) => ((n as FGNode).citationCount as number) >= minCitations}
-              linkColor={() => "rgba(110,110,110,0.35)"}
-              linkVisibility={(l) =>
-                citationOf((l as FGLink).source) >= minCitations &&
-                citationOf((l as FGLink).target) >= minCitations
-              }
-              linkDirectionalArrowLength={4}
-              linkDirectionalArrowRelPos={1}
-              onNodeClick={(n) => setSelected(n as unknown as GraphNode)}
-              cooldownTicks={120}
-              d3VelocityDecay={0.35}
-            />
-          </>
+      <div className="graph-body">
+        <div className="graph-canvas" ref={wrapRef}>
+          {loading ? (
+            <div className="empty">Loading citation data… (first load fetches from NIH iCite)</div>
+          ) : !data || data.nodes.length === 0 ? (
+            <div className="empty">No papers yet for this disease.</div>
+          ) : (
+            <>
+              {shown.nodes === 0 && (
+                <div className="empty">No papers match the current filters.</div>
+              )}
+              <ForceGraph2D
+                ref={fgRef}
+                width={size.width}
+                height={size.height}
+                graphData={graphData}
+                nodeId="pmid"
+                nodeLabel={(n) => String((n as FGNode).title ?? "")}
+                nodeColor={(n) => clustering.byPmid.get((n as FGNode).pmid)?.color ?? FALLBACK_COLOR}
+                nodeRelSize={1}
+                nodeVal={(n) => nodeValFromCount((n as FGNode).citationCount as number)}
+                nodeVisibility={(n) => isVisible((n as FGNode).pmid)}
+                linkColor={() => "rgba(110,110,110,0.35)"}
+                linkVisibility={(l) =>
+                  isVisible(endpointId((l as FGLink).source)) &&
+                  isVisible(endpointId((l as FGLink).target))
+                }
+                linkDirectionalArrowLength={4}
+                linkDirectionalArrowRelPos={1}
+                onNodeClick={(n) => setSelected(n as unknown as GraphNode)}
+                cooldownTicks={120}
+                d3VelocityDecay={0.35}
+              />
+            </>
+          )}
+        </div>
+
+        {data && clustering.clusters.length > 0 && (
+          <aside className="cluster-panel">
+            <div className="cluster-panel-head">
+              <span>Clusters ({clustering.clusters.length})</span>
+              {hiddenClusters.size > 0 ? (
+                <button className="link-btn" onClick={() => setHiddenClusters(new Set())}>
+                  Show all
+                </button>
+              ) : (
+                <button
+                  className="link-btn"
+                  onClick={() => setHiddenClusters(new Set(clustering.clusters.map((c) => c.id)))}
+                >
+                  Hide all
+                </button>
+              )}
+            </div>
+            <ul className="cluster-list">
+              {clustering.clusters.map((c) => (
+                <li
+                  key={c.id}
+                  className={`cluster-row${hiddenClusters.has(c.id) ? " hidden" : ""}`}
+                >
+                  <input
+                    type="checkbox"
+                    className="cluster-vis"
+                    checked={!hiddenClusters.has(c.id)}
+                    onChange={() => toggleCluster(c.id)}
+                    aria-label={`Toggle ${c.label}`}
+                  />
+                  <button
+                    type="button"
+                    className="cluster-main"
+                    onClick={() => centerCluster(c.id)}
+                    title={c.label}
+                  >
+                    <span className="swatch" style={{ backgroundColor: c.color }} />
+                    <span className="cluster-label">{c.label}</span>
+                    <span className="cluster-size">{c.size}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </aside>
         )}
       </div>
 
