@@ -1,5 +1,5 @@
 {
-  "name": "research-timeline",
+  "name": "sciluminate",
   "version": "1.0.0",
   "private": true,
   "description": "Local web app that polls top journals (via PubMed) and shows a per-disease timeline of recent research.",

@@ -68,7 +68,7 @@ export default function App() {
       <header className="app-header">
         <div className="brand">
           <span className="logo">🧬</span>
-          <h1>Research Timeline</h1>
+          <h1>SciLuminate</h1>
         </div>
         <div className="header-actions">
           {typeof active === "number" && (

@@ -1,4 +1,4 @@
-# Research Timeline
+# SciLuminate
 
 A local web app that watches the top medical journals you choose and keeps a
 **per-disease timeline** of the most recent research, pulled from PubMed/NCBI.
