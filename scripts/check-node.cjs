@@ -8,7 +8,7 @@ const major = Number(process.versions.node.split(".")[0]);
 if (!Number.isFinite(major) || major < MIN || major > MAX) {
   console.error(
     "\n" +
-      `  research-timeline requires Node ${MIN}–${MAX} (tested on Node 22).\n` +
+      `  sciluminate requires Node ${MIN}–${MAX} (tested on Node 22).\n` +
       `  You're on Node ${process.versions.node}, which has no prebuilt better-sqlite3\n` +
       "  binary and will fail to build from source without C++ build tools.\n\n" +
       "  Fix it with nvm:   nvm install 22 && nvm use 22\n" +

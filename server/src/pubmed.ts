@@ -3,7 +3,7 @@ import { findCatalogByName, getSettings } from "./db.js";
 import type { ArticleInsert } from "./db.js";
 
 const EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
-const TOOL = "research-timeline";
+const TOOL = "sciluminate";
 
 const xml = new XMLParser({
   ignoreAttributes: false,
