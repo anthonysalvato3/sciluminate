@@ -32,9 +32,9 @@ const linkKnown = db.transaction((pmids: string[], diseaseId: number) => {
 
 // Fetch + cache citation rows for newly added papers so the graph view doesn't
 // have to fetch them on first load. Mirrors the lazy fill in the /graph route,
-// but scoped to the poll's delta. Best-effort: never throws, so a slow/failing
-// iCite can't fail an otherwise successful poll.
-async function warmCitations(pmids: string[], diseaseName: string): Promise<void> {
+// but scoped to the caller's delta (a poll or a collection import). Best-effort:
+// never throws, so a slow/failing iCite can't fail an otherwise successful run.
+export async function warmCitations(pmids: string[], label: string): Promise<void> {
   if (pmids.length === 0) return;
   try {
     const fetched = await fetchCitations(pmids);
@@ -47,7 +47,7 @@ async function warmCitations(pmids: string[], diseaseName: string): Promise<void
     upsertCitations(rows);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[poll] ${diseaseName}: citation warm-up failed (will backfill on graph load): ${msg}`);
+    console.warn(`[warm] ${label}: citation warm-up failed (will backfill on graph load): ${msg}`);
   }
 }
 
