@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Article } from "../types";
 import { ArticleCard } from "./ArticleCard";
+import { TimelineSkeleton } from "./Skeleton";
 
 interface MonthGroup {
   key: string;
@@ -85,7 +86,7 @@ export function Timeline({ diseaseId, reloadToken }: { diseaseId: number; reload
       {error && <div className="banner error">{error}</div>}
 
       {loading ? (
-        <div className="empty">Loading…</div>
+        <TimelineSkeleton />
       ) : articles.length === 0 ? (
         <div className="empty">
           {search || journalFilter

@@ -1488,6 +1488,46 @@ code {
   cursor: default;
 }
 
+/* ---------- skeleton loading ---------- */
+
+.skeleton {
+  display: inline-block;
+  position: relative;
+  overflow: hidden;
+  background: var(--border);
+  border-radius: 6px;
+  vertical-align: middle;
+  max-width: 100%;
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after {
+    animation: none;
+  }
+}
+
+.picker-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+}
+
 /* ---------- dark mode (follows the OS setting) ---------- */
 
 @media (prefers-color-scheme: dark) {
@@ -1539,5 +1579,10 @@ code {
   .file-missing {
     background: #3a1f22;
     color: #f3a3a3;
+  }
+
+  /* Bright shimmer washes out on dark panels; use a faint sheen instead. */
+  .skeleton::after {
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.07), transparent);
   }
 }
