@@ -183,7 +183,14 @@ export default function App() {
         />
       </div>
 
-      {status && <div className="banner info">{status}</div>}
+      {status && (
+        <div className="banner info dismissible">
+          <span>{status}</span>
+          <button className="banner-close" onClick={() => setStatus(null)} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      )}
 
       <main className="app-main">
         {!loaded ? (
