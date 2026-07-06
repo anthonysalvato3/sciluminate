@@ -1,28 +1,46 @@
+import fs from "node:fs";
 import { Router } from "express";
 import {
+  addCollectionFiles,
+  collectionCounts,
+  collectionGraphPapers,
+  collectionPapers,
   countJournalArticles,
+  createCollection,
   createDisease,
   createJournal,
+  deleteCollection,
+  deleteCollectionFile,
   deleteDisease,
   diseaseArticleCounts,
   getCitations,
+  getCollection,
+  getCollectionFile,
   getSettings,
   graphPapers,
   journalByNlmId,
   journalsForDisease,
   listArticles,
+  listCollectionFiles,
+  listCollections,
   listDiseases,
   listJournals,
   missingOrStaleCitations,
   removeJournalWithArticles,
+  renameCollection,
   searchCatalog,
+  setFileMatched,
   setSetting,
+  upsertArticles,
   upsertCitations,
 } from "./db.js";
+import open from "open";
+import { collectPdfs, FsError, listDir, listRoots } from "./fsbrowse.js";
 import { fetchCitations } from "./icite.js";
+import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
-import { resolveJournal } from "./pubmed.js";
-import { pollAll, pollDisease, rescheduleFromSettings } from "./poller.js";
+import { fetchArticles, resolveJournal } from "./pubmed.js";
+import { pollAll, pollDisease, rescheduleFromSettings, warmCitations } from "./poller.js";
 import type { GraphEdge, GraphNode, GraphResponse, Settings } from "./types.js";
 
 function round1(n: number | null): number | null {
@@ -142,9 +160,12 @@ api.get("/articles", (req, res) => {
 
 api.get("/graph", async (req, res) => {
   const diseaseId = Number(req.query.disease);
-  if (!diseaseId) return res.status(400).json({ error: "'disease' query param is required." });
+  const collectionId = Number(req.query.collection);
+  if (!diseaseId && !collectionId) {
+    return res.status(400).json({ error: "'disease' or 'collection' query param is required." });
+  }
   try {
-    const papers = graphPapers(diseaseId);
+    const papers = diseaseId ? graphPapers(diseaseId) : collectionGraphPapers(collectionId);
     const pmids = papers.map((p) => p.pmid);
     const inSet = new Set(pmids);
 
@@ -180,6 +201,154 @@ api.get("/graph", async (req, res) => {
 
     const body: GraphResponse = { nodes, edges };
     res.json(body);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ---------- collections (local PDF libraries) ----------
+
+api.get("/collections", (_req, res) => {
+  const counts = collectionCounts();
+  res.json(
+    listCollections().map((c) => ({
+      ...c,
+      fileCount: counts[c.id]?.files ?? 0,
+      matchedCount: counts[c.id]?.matched ?? 0,
+    }))
+  );
+});
+
+api.post("/collections", (req, res) => {
+  const name = String(req.body?.name ?? "").trim();
+  if (!name) return res.status(400).json({ error: "'name' is required." });
+  res.status(201).json(createCollection(name));
+});
+
+api.put("/collections/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const name = String(req.body?.name ?? "").trim();
+  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
+  renameCollection(id, name);
+  res.json(getCollection(id));
+});
+
+api.delete("/collections/:id", (req, res) => {
+  // collection_files cascade; cached articles/citations stay (shared globally).
+  deleteCollection(Number(req.params.id));
+  res.status(204).end();
+});
+
+// Papers (matched, deduped by pmid) + every file row, so the client can show
+// unmatched/error files and flag files that have moved on disk.
+api.get("/collections/:id/papers", (req, res) => {
+  const id = Number(req.params.id);
+  if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
+  const files = listCollectionFiles(id).map((f) => ({
+    ...f,
+    exists: fs.existsSync(f.file_path),
+  }));
+  res.json({ papers: collectionPapers(id), files });
+});
+
+// Add folders/files to a collection and start the scan/match job. Only
+// 'pending' rows are scanned, so re-importing a folder picks up new files
+// without redoing the ones already matched.
+api.post("/collections/:id/import", async (req, res) => {
+  const id = Number(req.params.id);
+  const collection = getCollection(id);
+  if (!collection) return res.status(404).json({ error: "Collection not found." });
+  if (isImportRunning(id)) {
+    return res.status(409).json({ error: "An import is already running for this collection." });
+  }
+  const paths = Array.isArray(req.body?.paths) ? req.body.paths.map(String) : [];
+  if (paths.length === 0) return res.status(400).json({ error: "'paths' is required." });
+  const recursive = Boolean(req.body?.recursive);
+  try {
+    const found = await collectPdfs(paths, recursive);
+    const added = addCollectionFiles(id, found);
+    const status = startImport(id, collection.name);
+    res.status(202).json({
+      jobId: status.jobId,
+      added,
+      skipped: found.length - added,
+      total: status.total,
+    });
+  } catch (err) {
+    const status = err instanceof FsError ? err.status : 500;
+    res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+api.get("/collections/:id/import/status", (req, res) => {
+  res.json(getImportStatus(Number(req.params.id)) ?? { state: "idle" });
+});
+
+// Manually assign a PMID to a file the scanner couldn't match. The PMID is
+// validated by actually fetching its metadata from PubMed.
+api.post("/collections/files/:fileId/pmid", async (req, res) => {
+  const fileId = Number(req.params.fileId);
+  const file = getCollectionFile(fileId);
+  if (!file) return res.status(404).json({ error: "File not found." });
+  const pmid = String(req.body?.pmid ?? "").trim();
+  if (!/^\d{1,8}$/.test(pmid)) {
+    return res.status(400).json({ error: "A PMID is 1–8 digits." });
+  }
+  try {
+    const articles = await fetchArticles([pmid]);
+    if (articles.length === 0) {
+      return res.status(422).json({ error: `PubMed doesn't recognize PMID ${pmid}.` });
+    }
+    upsertArticles(articles);
+    await warmCitations([pmid], "manual match");
+    setFileMatched(fileId, pmid, "manual");
+    res.json(getCollectionFile(fileId));
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+api.delete("/collections/files/:fileId", (req, res) => {
+  deleteCollectionFile(Number(req.params.fileId));
+  res.status(204).end();
+});
+
+// ---------- filesystem browsing (for the folder picker) ----------
+
+api.get("/fs/roots", async (_req, res) => {
+  try {
+    res.json(await listRoots());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+api.get("/fs/list", async (req, res) => {
+  try {
+    res.json(await listDir(String(req.query.path ?? "")));
+  } catch (err) {
+    const status = err instanceof FsError ? err.status : 500;
+    res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ---------- open a file in the OS default viewer ----------
+
+// Takes a fileId (never a raw path), so it can only ever launch a PDF the user
+// has already added to a collection. `open` spawns the handler without a shell,
+// so filenames can't inject commands.
+api.post("/open", async (req, res) => {
+  const fileId = Number(req.body?.fileId);
+  if (!fileId) return res.status(400).json({ error: "'fileId' is required." });
+  const file = getCollectionFile(fileId);
+  if (!file) return res.status(404).json({ error: "File not found." });
+  if (!fs.existsSync(file.file_path)) {
+    return res.status(410).json({ error: "That file is no longer at its saved location." });
+  }
+  try {
+    await open(file.file_path);
+    res.status(204).end();
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
