@@ -6,6 +6,7 @@ import { Timeline } from "./components/Timeline";
 import { CitationGraph } from "./components/CitationGraph";
 import { CollectionView } from "./components/CollectionView";
 import { Settings } from "./components/Settings";
+import { TimelineSkeleton } from "./components/Skeleton";
 
 type ViewMode = "timeline" | "graph";
 
@@ -194,7 +195,7 @@ export default function App() {
 
       <main className="app-main">
         {!loaded ? (
-          <div className="empty">Loading…</div>
+          <TimelineSkeleton />
         ) : showSettings ? (
           <Settings onDataChanged={loadDiseases} />
         ) : inDiscover ? (
