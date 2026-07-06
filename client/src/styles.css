@@ -1009,6 +1009,14 @@ code {
   border-color: var(--accent);
 }
 
+.ws-trigger-loading {
+  cursor: default;
+}
+
+.ws-trigger-loading:hover {
+  border-color: var(--border);
+}
+
 .ws-current {
   overflow: hidden;
   text-overflow: ellipsis;
