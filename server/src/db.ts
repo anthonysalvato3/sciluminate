@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { DB_PATH, ENV_DEFAULTS } from "./config.js";
-import type { Article, Disease, Journal, Settings } from "./types.js";
+import type { Article, Collection, CollectionFile, Disease, Journal, Settings } from "./types.js";
 
 // Ensure the data directory exists before opening the database.
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -74,6 +74,31 @@ db.exec(`
     metric_fetched_at TEXT
   );
 
+  -- User-created collections of local PDF files. Matched files soft-reference
+  -- articles.pmid (no FK: removeJournalWithArticles bulk-deletes articles, and
+  -- paper_citations already sets the soft-reference precedent).
+  CREATE TABLE IF NOT EXISTS collections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS collection_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    collection_id INTEGER NOT NULL,
+    file_path TEXT NOT NULL,          -- absolute path (path.resolve output)
+    file_name TEXT NOT NULL,
+    pmid TEXT,                        -- soft ref to articles.pmid
+    match_status TEXT NOT NULL DEFAULT 'pending',  -- pending|matched|unmatched|error
+    match_method TEXT NOT NULL DEFAULT '',          -- pmid|doi|manual|''
+    match_error TEXT NOT NULL DEFAULT '',
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (collection_id, file_path),
+    FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_collection_files_collection ON collection_files(collection_id);
+  CREATE INDEX IF NOT EXISTS idx_collection_files_pmid ON collection_files(pmid);
   CREATE INDEX IF NOT EXISTS idx_article_diseases_disease ON article_diseases(disease_id);
   CREATE INDEX IF NOT EXISTS idx_articles_pub_date ON articles(pub_date);
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_title ON journal_catalog(title COLLATE NOCASE);
@@ -444,6 +469,171 @@ function safeParseRefs(raw: string): string[] {
   } catch {
     return [];
   }
+}
+
+// ---------- collections (local PDF libraries) ----------
+
+export function listCollections(): Collection[] {
+  return db
+    .prepare("SELECT id, name, created_at FROM collections ORDER BY id ASC")
+    .all() as Collection[];
+}
+
+export function getCollection(id: number): Collection | undefined {
+  return db
+    .prepare("SELECT id, name, created_at FROM collections WHERE id = ?")
+    .get(id) as Collection | undefined;
+}
+
+export function createCollection(name: string): Collection {
+  const info = db.prepare("INSERT INTO collections (name) VALUES (?)").run(name);
+  return getCollection(Number(info.lastInsertRowid))!;
+}
+
+export function renameCollection(id: number, name: string): void {
+  db.prepare("UPDATE collections SET name = ? WHERE id = ?").run(name, id);
+}
+
+export function deleteCollection(id: number): void {
+  // collection_files rows cascade; cached articles/paper_citations stay.
+  db.prepare("DELETE FROM collections WHERE id = ?").run(id);
+}
+
+export function collectionCounts(): Record<number, { files: number; matched: number }> {
+  const rows = db
+    .prepare(
+      `SELECT collection_id, COUNT(*) AS files,
+              SUM(CASE WHEN match_status = 'matched' THEN 1 ELSE 0 END) AS matched
+       FROM collection_files GROUP BY collection_id`
+    )
+    .all() as { collection_id: number; files: number; matched: number }[];
+  const out: Record<number, { files: number; matched: number }> = {};
+  for (const r of rows) out[r.collection_id] = { files: r.files, matched: r.matched ?? 0 };
+  return out;
+}
+
+const insertFileStmt = db.prepare(
+  "INSERT OR IGNORE INTO collection_files (collection_id, file_path, file_name) VALUES (?, ?, ?)"
+);
+
+// Add files to a collection, atomically. INSERT OR IGNORE + the
+// UNIQUE(collection_id, file_path) constraint make re-adding a folder a no-op
+// for files already present. Returns how many were actually inserted.
+export const addCollectionFiles = db.transaction(
+  (collectionId: number, files: { path: string; name: string }[]): number => {
+    let added = 0;
+    for (const f of files) added += insertFileStmt.run(collectionId, f.path, f.name).changes;
+    return added;
+  }
+);
+
+const FILE_COLS =
+  "id, collection_id, file_path, file_name, pmid, match_status, match_method, match_error, added_at";
+
+export function listCollectionFiles(collectionId: number): CollectionFile[] {
+  return db
+    .prepare(`SELECT ${FILE_COLS} FROM collection_files WHERE collection_id = ? ORDER BY file_name ASC`)
+    .all(collectionId) as CollectionFile[];
+}
+
+export function pendingCollectionFiles(collectionId: number): CollectionFile[] {
+  return db
+    .prepare(
+      `SELECT ${FILE_COLS} FROM collection_files
+       WHERE collection_id = ? AND match_status = 'pending' ORDER BY file_name ASC`
+    )
+    .all(collectionId) as CollectionFile[];
+}
+
+export function getCollectionFile(fileId: number): CollectionFile | undefined {
+  return db
+    .prepare(`SELECT ${FILE_COLS} FROM collection_files WHERE id = ?`)
+    .get(fileId) as CollectionFile | undefined;
+}
+
+export function setFileMatched(fileId: number, pmid: string, method: "pmid" | "doi" | "manual"): void {
+  db.prepare(
+    "UPDATE collection_files SET pmid = ?, match_status = 'matched', match_method = ?, match_error = '' WHERE id = ?"
+  ).run(pmid, method, fileId);
+}
+
+export function setFileUnmatched(fileId: number): void {
+  db.prepare(
+    "UPDATE collection_files SET pmid = NULL, match_status = 'unmatched', match_method = '', match_error = '' WHERE id = ?"
+  ).run(fileId);
+}
+
+export function setFileError(fileId: number, message: string): void {
+  db.prepare(
+    "UPDATE collection_files SET pmid = NULL, match_status = 'error', match_method = '', match_error = ? WHERE id = ?"
+  ).run(message, fileId);
+}
+
+export function deleteCollectionFile(fileId: number): void {
+  db.prepare("DELETE FROM collection_files WHERE id = ?").run(fileId);
+}
+
+// Insert/refresh articles without linking them to a disease (collections track
+// membership in collection_files instead of article_diseases).
+export const upsertArticles = db.transaction((articles: ArticleInsert[]) => {
+  for (const a of articles) {
+    upsertArticleStmt.run({
+      pmid: a.pmid,
+      title: a.title,
+      abstract: a.abstract,
+      journal_name: a.journal_name,
+      nlm_id: a.nlm_id || null,
+      authors: JSON.stringify(a.authors),
+      pub_date: a.pub_date,
+      pub_date_display: a.pub_date_display,
+      doi: a.doi,
+      url: a.url,
+    });
+  }
+});
+
+export interface CollectionPaper {
+  pmid: string;
+  title: string;
+  journal_name: string;
+  authors: string[];
+  pub_date: string;
+  pub_date_display: string;
+  doi: string;
+  url: string;
+  citation_count: number;
+}
+
+// The papers-list rows for a collection. DISTINCT pmid collapses duplicate
+// copies of the same paper (two files, one PMID) into a single row.
+export function collectionPapers(collectionId: number): CollectionPaper[] {
+  const rows = db
+    .prepare(
+      `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_name, a.authors,
+              a.pub_date, a.pub_date_display, a.doi, a.url,
+              COALESCE(pc.citation_count, 0) AS citation_count
+       FROM (SELECT DISTINCT pmid FROM collection_files
+             WHERE collection_id = ? AND pmid IS NOT NULL) cf
+       JOIN articles a ON a.pmid = cf.pmid
+       LEFT JOIN journals j ON j.nlm_id = a.nlm_id
+       LEFT JOIN journal_catalog jc ON jc.nlm_id = a.nlm_id
+       LEFT JOIN paper_citations pc ON pc.pmid = a.pmid
+       ORDER BY a.pub_date DESC, a.pmid DESC`
+    )
+    .all(collectionId) as Array<Omit<CollectionPaper, "authors"> & { authors: string }>;
+  return rows.map((r) => ({ ...r, authors: safeParseAuthors(r.authors) }));
+}
+
+// The papers that make up one collection's citation graph (same shape as
+// graphPapers, so the /graph route works on either source).
+export function collectionGraphPapers(collectionId: number): GraphPaper[] {
+  return db
+    .prepare(
+      `SELECT DISTINCT a.pmid, a.title, a.url, a.pub_date FROM articles a
+       JOIN collection_files cf ON cf.pmid = a.pmid
+       WHERE cf.collection_id = ?`
+    )
+    .all(collectionId) as GraphPaper[];
 }
 
 // ---------- journal catalog (NLM J_Medline) ----------
