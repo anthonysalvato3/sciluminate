@@ -26,6 +26,26 @@ export interface Article {
   first_seen_at: string;
 }
 
+export interface Collection {
+  id: number;
+  name: string;
+  created_at: string;
+}
+
+export type CollectionFileStatus = "pending" | "matched" | "unmatched" | "error";
+
+export interface CollectionFile {
+  id: number;
+  collection_id: number;
+  file_path: string; // absolute local path
+  file_name: string;
+  pmid: string | null; // soft ref to articles.pmid once matched
+  match_status: CollectionFileStatus;
+  match_method: string; // pmid | doi | manual | ''
+  match_error: string;
+  added_at: string;
+}
+
 export interface PollResult {
   diseaseId: number;
   diseaseName: string;
