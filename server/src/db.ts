@@ -160,6 +160,7 @@ export function getSettings(): Settings {
     ncbi_email: getSetting("ncbi_email"),
     poll_cron: getSetting("poll_cron"),
     poll_enabled: getSetting("poll_enabled"),
+    library_open: getSetting("library_open"),
   };
 }
 

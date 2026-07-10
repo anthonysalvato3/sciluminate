@@ -39,6 +39,8 @@ export default function App() {
   // single-user mode, where stored PDFs open directly without minted links.
   // Defaults true (the stricter path) until /api/auth answers.
   const [tokenRequired, setTokenRequired] = useState(true);
+  // The owner's Open Library opt-in: viewers download stored PDFs directly.
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
 
   function loadDiseases(): Promise<Disease[]> {
@@ -67,11 +69,14 @@ export default function App() {
     setAuthRejectedHandler(() => setIsAdmin(false));
     // Admin state resolves with the same `loaded` flip so the admin controls
     // don't pop in after the skeletons clear.
-    const auth = api.getAuth().catch(() => ({ admin: false, token_required: true }));
+    const auth = api
+      .getAuth()
+      .catch(() => ({ admin: false, token_required: true, library_open: false }));
     Promise.all([loadDiseases(), loadCollections(), auth]).then(
-      ([ds, cs, { admin, token_required }]) => {
+      ([ds, cs, { admin, token_required, library_open }]) => {
         setIsAdmin(admin);
         setTokenRequired(token_required);
+        setLibraryOpen(library_open);
         // Land in whichever workspace actually has something in it.
         if (ds.length > 0) {
           setMode("discover");
@@ -148,7 +153,9 @@ export default function App() {
   async function unlock(token: string) {
     setUnlocking(false);
     setAdminToken(token.trim());
-    const { admin } = await api.getAuth().catch(() => ({ admin: false, token_required: true }));
+    const { admin } = await api
+      .getAuth()
+      .catch(() => ({ admin: false, token_required: true, library_open: false }));
     setIsAdmin(admin);
     if (!admin) {
       setAdminToken(null);
@@ -223,6 +230,7 @@ export default function App() {
         emptyState={emptyState}
         isAdmin={isAdmin}
         tokenRequired={tokenRequired}
+        libraryOpen={libraryOpen}
       />
     ));
 

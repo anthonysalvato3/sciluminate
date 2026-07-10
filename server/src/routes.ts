@@ -99,10 +99,23 @@ api.use((req, res, next) => {
   res.status(401).json({ error: "Admin access required." });
 });
 
+// The owner's opt-in that lets viewers download stored PDFs without a share
+// link — for instances already behind an authenticated perimeter (VPN,
+// reverse-proxy auth). Never consulted in tokenless mode, where everyone is
+// admin anyway.
+function libraryOpen(): boolean {
+  return getSettings().library_open === "1";
+}
+
 // Lets the client decide whether to show mutating UI, and whether stored PDFs
-// need minted links (token mode) or open directly (tokenless single-user).
+// need minted links (token mode) or open directly (tokenless single-user or
+// an open library).
 api.get("/auth", (req, res) => {
-  res.json({ admin: isAdminRequest(req), token_required: ADMIN_TOKEN.length > 0 });
+  res.json({
+    admin: isAdminRequest(req),
+    token_required: ADMIN_TOKEN.length > 0,
+    library_open: libraryOpen(),
+  });
 });
 
 // ---------- diseases ----------
@@ -401,9 +414,9 @@ api.post("/collections/:id/import", (req, res) => {
 api.get("/collections/files/:fileId/content", (req, res) => {
   const file = getCollectionFile(Number(req.params.fileId));
   if (!file) return res.status(404).json({ error: "File not found." });
-  if (!isAdminRequest(req)) {
+  if (!isAdminRequest(req) && !libraryOpen()) {
     if (req.query.exp == null && req.query.sig == null) {
-      return res.status(401).json({ error: "Stored PDFs are owner-only. Ask the owner for a share link." });
+      return res.status(401).json({ error: "Stored files have been set to owner-only, so you must ask the owner for a share link. Please reload the page to reflect these changes in your web browser." });
     }
     const verdict = verifyFileShare(file.id, file.content_hash, req.query.exp, req.query.sig);
     if (verdict === "expired") {
@@ -494,7 +507,7 @@ api.get("/collections/:id/archive", (req, res) => {
   const id = Number(req.params.id);
   const collection = getCollection(id);
   if (!collection) return res.status(404).json({ error: "Collection not found." });
-  if (!isAdminRequest(req)) {
+  if (!isAdminRequest(req) && !libraryOpen()) {
     if (req.query.exp == null && req.query.sig == null) {
       return res.status(401).json({ error: "Stored PDFs are owner-only. Ask the owner for a share link." });
     }
@@ -615,6 +628,7 @@ function settingsResponse() {
     ncbi_email: s.ncbi_email,
     poll_cron: s.poll_cron,
     poll_enabled: s.poll_enabled === "1",
+    library_open: s.library_open === "1",
     has_api_key: Boolean(s.ncbi_api_key),
     share_urls: shareUrls(),
   };
@@ -632,6 +646,9 @@ api.put("/settings", (req, res) => {
   }
   if (typeof body.poll_enabled === "boolean") {
     setSetting("poll_enabled", body.poll_enabled ? "1" : "0");
+  }
+  if (typeof body.library_open === "boolean") {
+    setSetting("library_open", body.library_open ? "1" : "0");
   }
   // Only overwrite the API key when a non-empty value is explicitly provided.
   if (typeof body.ncbi_api_key === "string" && body.ncbi_api_key.trim()) {

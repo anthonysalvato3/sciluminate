@@ -205,6 +205,25 @@ export function Settings({
     setTimeout(() => setCopiedUrl((cur) => (cur === url ? null : cur)), 2000);
   }
 
+  // The Open Library switch lives outside the settings form and saves
+  // immediately; the PUT has patch semantics so only this key is sent.
+  const [librarySaved, setLibrarySaved] = useState(false);
+  async function toggleOpenLibrary(on: boolean) {
+    if (!settings) return;
+    const before = settings;
+    setError(null);
+    setSettings({ ...settings, library_open: on }); // optimistic; server confirms below
+    try {
+      const updated = await api.updateSettings({ library_open: on });
+      setSettings(updated);
+      setLibrarySaved(true);
+      setTimeout(() => setLibrarySaved(false), 2000);
+    } catch (err) {
+      setSettings(before);
+      setError(errorMessage(err));
+    }
+  }
+
   async function saveSettings(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -439,9 +458,8 @@ export function Settings({
             <>
               <p className="hint">
                 Send one of these addresses to anyone on your network. They can view
-                everything except stored PDFs — share an individual PDF with the Share
-                button in the Papers table. Changing anything still requires the admin
-                token.
+                everything except stored PDFs — share those with the 🔗 buttons, or turn
+                on Open Library below. Changing anything still requires the admin token.
               </p>
               <ul className="list">
                 {settings.share_urls.map((url) => (
@@ -455,6 +473,25 @@ export function Settings({
                   </li>
                 ))}
               </ul>
+              <label className="open-library">
+                <span>
+                  Open Library {librarySaved && <span className="pill">Saved ✓</span>}
+                </span>
+                <span className="switch-row">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    className="switch"
+                    checked={settings.library_open}
+                    onChange={(e) => toggleOpenLibrary(e.target.checked)}
+                  />
+                  <span className="hint">
+                    When on, viewers can freely download stored files and collection zips —
+                    no share link needed. When off, files are owner-only and shared via
+                    expiring links.
+                  </span>
+                </span>
+              </label>
             </>
           ))}
       </section>
