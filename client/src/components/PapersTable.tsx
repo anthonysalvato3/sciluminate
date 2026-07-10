@@ -23,12 +23,14 @@ export function PapersTable({
   emptyState,
   isAdmin,
   tokenRequired,
+  libraryOpen,
 }: {
   source: PaperSource;
   reloadToken: number;
   emptyState?: ReactNode;
   isAdmin: boolean;
   tokenRequired: boolean;
+  libraryOpen: boolean;
 }) {
   const {
     key,
@@ -112,17 +114,18 @@ export function PapersTable({
   // viewers and tokenless single-user setups get the plain table.
   const showShareCol = isAdmin && tokenRequired;
 
-  // Whether a title click will open the stored PDF (vs falling back to PubMed).
-  // Viewers never open stored PDFs in token mode — they're owner-only.
+  // Whether a title click will open the stored PDF (vs falling back to
+  // PubMed). In token mode PDFs are owner-only unless the owner has opened
+  // the Library to viewers.
   function opensStoredPdf(p: Paper): boolean {
     if (p.file_id == null) return false;
-    if (!tokenRequired) return true; // tokenless single-user: open as always
+    if (!tokenRequired || libraryOpen) return true; // bare URL works for everyone
     return isAdmin && p.file_exists;
   }
 
   async function openPaper(p: Paper) {
     if (!opensStoredPdf(p)) return void window.open(p.url, "_blank", "noopener");
-    if (!tokenRequired) {
+    if (!tokenRequired || libraryOpen) {
       return void window.open(api.fileContentUrl(p.file_id!), "_blank", "noopener");
     }
     // Token mode: window.open can't carry the Authorization header, so mint a

@@ -50,12 +50,14 @@ export interface RefreshResponse {
   polledAt: string;
 }
 
-// What /api/auth reports: whether this browser's requests count as admin, and
+// What /api/auth reports: whether this browser's requests count as admin,
 // whether an ADMIN_TOKEN is configured at all (false = tokenless single-user
-// mode, where stored PDFs stay openly fetchable).
+// mode, where stored PDFs stay openly fetchable), and whether the owner has
+// opened the Library so viewers can download PDFs without a share link.
 export interface AuthStatus {
   admin: boolean;
   token_required: boolean;
+  library_open: boolean;
 }
 
 // What /api/settings exposes: never the API key itself, just whether one is set.
@@ -63,6 +65,7 @@ export interface AppSettings {
   ncbi_email: string;
   poll_cron: string;
   poll_enabled: boolean;
+  library_open: boolean;
   has_api_key: boolean;
   // URLs where other machines can reach this server; empty when bound to loopback.
   share_urls: string[];
