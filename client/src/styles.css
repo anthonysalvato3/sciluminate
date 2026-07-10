@@ -602,6 +602,22 @@ input:disabled {
   cursor: not-allowed;
 }
 
+/* Open Library switch in the Sharing panel — mirrors .stacked-form label. */
+.open-library {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.open-library .hint {
+  font-weight: 400;
+  margin: 0;
+}
+
 input {
   padding: 9px 11px;
   border: 1px solid var(--border);

@@ -47,6 +47,10 @@ export const SETTING_DEFAULTS = {
   ncbi_email: "",
   poll_cron: DEFAULT_POLL_CRON,
   poll_enabled: "0",
+  // Owner's opt-in: viewers may download stored PDFs without a share link.
+  // Deliberately a UI setting (not env): the instance owner, not whoever
+  // deploys the server, must be the one making that call.
+  library_open: "0",
 };
 
 // Path to the built client (used in production / `npm start`)

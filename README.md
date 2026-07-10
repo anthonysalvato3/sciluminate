@@ -72,7 +72,9 @@ auth. To let other people browse your instance read-only:
    works for 24 hours. The 🔗 beside the collection picker does the same for
    a whole collection, downloaded as a zip. (Links work for whoever has
    them, so send them privately; rotating `ADMIN_TOKEN` cancels all
-   outstanding links.) The
+   outstanding links.) If your instance already sits behind its own login
+   (VPN, reverse-proxy auth), you can instead flip **Open Library** in
+   Settings → Sharing to let viewers download stored PDFs directly. The
    exact address to send people (with a copy button) is shown in
    **Settings → Sharing** once you unlock admin mode.
 3. To administer, click the **🔒 padlock** in the header and paste the token.
