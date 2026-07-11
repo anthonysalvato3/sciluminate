@@ -19,11 +19,16 @@ import { chunk, errMessage } from "./util.js";
 const BATCH_SIZE = 100;
 
 // Link existing articles to a disease without refetching them from PubMed.
+// Returns how many links were newly created — INSERT OR IGNORE reports 0
+// changes for a (pmid, disease) row that already existed — so a poll can count
+// these toward its "added" delta.
 const linkStmt = db.prepare(
   "INSERT OR IGNORE INTO article_diseases (pmid, disease_id) VALUES (?, ?)"
 );
-const linkKnown = transaction((pmids: string[], diseaseId: number) => {
-  for (const pmid of pmids) linkStmt.run(pmid, diseaseId);
+const linkKnown = transaction((pmids: string[], diseaseId: number): number => {
+  let linked = 0;
+  for (const pmid of pmids) linked += Number(linkStmt.run(pmid, diseaseId).changes);
+  return linked;
 });
 
 // Warm the citation cache for newly added papers so the graph view doesn't
@@ -65,9 +70,12 @@ export async function pollDisease(id: number): Promise<PollResult> {
     }
 
     // A paper already stored under another disease may also match this one —
-    // link it here too, without a wasteful refetch.
+    // link it here too, without a wasteful refetch. A newly created link counts
+    // toward `added`: from this feed's view the paper just appeared, even though
+    // it wasn't fetched from PubMed. Without this the banner shows "Added 0"
+    // while the feed grew.
     const alreadyKnown = pmids.filter((p) => known.has(p));
-    linkKnown(alreadyKnown, id);
+    result.added += linkKnown(alreadyKnown, id);
 
     // Warm the citation cache for just-added papers (brand new, so always
     // missing) so their graph opens instantly. Best-effort: a failure must not
@@ -112,6 +120,13 @@ export async function withPollLock<T>(fn: () => Promise<T>): Promise<T | null> {
 // ---------- scheduler ----------
 
 let task: ScheduledTask | null = null;
+
+// Whether an expression is a schedulable cron string. Exported so the settings
+// route can reject bad input up front (a 400) instead of saving it and letting
+// rescheduleFromSettings silently fall back to the default below.
+export function isValidCron(expr: string): boolean {
+  return cron.validate(expr);
+}
 
 export function startScheduler(): void {
   rescheduleFromSettings();

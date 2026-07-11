@@ -118,9 +118,11 @@ export function PapersTable({
   // PubMed). In token mode PDFs are owner-only unless the owner has opened
   // the Library to viewers.
   function opensStoredPdf(p: Paper): boolean {
-    if (p.file_id == null) return false;
+    // No matched file, or the blob is gone (orphaned/deleted) — fall back to
+    // PubMed rather than opening a content URL the server answers with 410.
+    if (p.file_id == null || !p.file_exists) return false;
     if (!tokenRequired || libraryOpen) return true; // bare URL works for everyone
-    return isAdmin && p.file_exists;
+    return isAdmin;
   }
 
   async function openPaper(p: Paper) {
