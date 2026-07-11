@@ -50,6 +50,26 @@ export interface CollectionFile {
   added_at: string;
 }
 
+// A live PDF-import job's status, tracked server-side and streamed to the
+// client while the scan runs.
+export interface ImportJob {
+  jobId: string;
+  state: "running" | "done" | "error";
+  total: number; // pending files at job start
+  processed: number; // PDFs text-extracted so far
+  matched: number;
+  unmatched: number;
+  errors: number;
+  currentFile: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  error?: string; // fatal job failure only
+}
+
+// What GET /collections/:id/import/status returns: the current job, or an idle
+// sentinel when no import has run for the collection.
+export type ImportStatus = ImportJob | { state: "idle" };
+
 // One row of the unified papers view (/api/papers): article metadata plus the
 // cached citation count, for either paper source. The file_* fields carry the
 // first matched uploaded copy and are only populated for collection sources —
@@ -86,7 +106,7 @@ export interface PollResult {
   diseaseId: number;
   diseaseName: string;
   found: number; // PMIDs returned by search
-  added: number; // new papers inserted
+  added: number; // papers newly added to this feed (fetched, or linked from another feed)
   error?: string;
 }
 

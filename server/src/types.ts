@@ -9,6 +9,7 @@ export type {
   GraphEdge,
   GraphNode,
   GraphResponse,
+  ImportJob,
   Journal,
   JournalRemovalResult,
   Paper,

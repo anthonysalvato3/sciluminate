@@ -49,7 +49,14 @@ import { ADMIN_TOKEN, HOST, HOST_IS_LOOPBACK, PORT, UPLOAD_TMP_DIR } from "./con
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { fetchArticles, resolveJournal } from "./pubmed.js";
-import { pollAll, pollDisease, rescheduleFromSettings, warmCitations, withPollLock } from "./poller.js";
+import {
+  isValidCron,
+  pollAll,
+  pollDisease,
+  rescheduleFromSettings,
+  warmCitations,
+  withPollLock,
+} from "./poller.js";
 import { ZipArchive } from "archiver";
 import {
   signCollectionShare,
@@ -58,7 +65,14 @@ import {
   verifyCollectionShare,
   verifyFileShare,
 } from "./signing.js";
-import type { GraphEdge, GraphNode, GraphResponse, PapersResponse, Settings } from "./types.js";
+import type {
+  CollectionFile,
+  GraphEdge,
+  GraphNode,
+  GraphResponse,
+  PapersResponse,
+  Settings,
+} from "./types.js";
 import { errMessage, round1 } from "./util.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
@@ -348,20 +362,22 @@ api.delete("/collections/:id", (req, res) => {
   res.status(204).end();
 });
 
+// The API shape of a collection file: the DB row minus the server-internal
+// content_hash (the blob-store key, which also feeds the share-link MAC), plus
+// whether that blob is still present. The files list and the manual-match
+// response both go through this, so the client always sees one shape.
+function apiFile(row: CollectionFile): Omit<CollectionFile, "content_hash"> & { exists: boolean } {
+  const { content_hash, ...rest } = row;
+  return { ...rest, exists: blobExists(content_hash) };
+}
+
 // Every file row of a collection (matched or not), for the management shell:
 // the unmatched-files section and flagging files whose blob has gone missing.
 // Paper rows themselves come from /api/papers.
 api.get("/collections/:id/files", (req, res) => {
   const id = Number(req.params.id);
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
-  res.json({
-    // content_hash is the blob-store key — server-internal, so viewers never
-    // see it (it also feeds the share-link MAC).
-    files: listCollectionFiles(id).map(({ content_hash, ...f }) => ({
-      ...f,
-      exists: blobExists(content_hash),
-    })),
-  });
+  res.json({ files: listCollectionFiles(id).map(apiFile) });
 });
 
 // Upload PDFs into a collection. Each file is verified by magic bytes, hashed
@@ -581,7 +597,10 @@ api.post(
     upsertArticles(articles);
     await warmCitations([pmid], "manual match");
     setFileMatched(fileId, pmid, "manual");
-    res.json(getCollectionFile(fileId));
+    // Return the same shape as the files list (content_hash stripped, exists
+    // added), not the raw row. getCollectionFile can't be missing here — the
+    // row was verified above and setFileMatched only updates it.
+    res.json(apiFile(getCollectionFile(fileId)!));
   })
 );
 
@@ -653,12 +672,23 @@ function settingsResponse() {
   };
 }
 
-api.get("/settings", (_req, res) => {
+// Unlike other reads, this one is admin-only: it exposes the owner's NCBI email
+// and this machine's external IPs (share_urls). The global gate above only
+// covers mutations, so GETs need their own check — without it, any viewer on a
+// shared instance could read these.
+api.get("/settings", (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Admin access required." });
   res.json(settingsResponse());
 });
 
 api.put("/settings", (req, res) => {
   const body = req.body ?? {};
+  // A blank cron means "use the default"; anything else must be valid, or the
+  // scheduler would silently fall back to the default while the UI reported a
+  // successful save. Reject before persisting so nothing is half-applied.
+  if (typeof body.poll_cron === "string" && body.poll_cron.trim() && !isValidCron(body.poll_cron.trim())) {
+    return res.status(400).json({ error: "That isn't a valid cron expression." });
+  }
   const editable: (keyof Settings)[] = ["ncbi_email", "poll_cron"];
   for (const key of editable) {
     if (typeof body[key] === "string") setSetting(key, body[key].trim());

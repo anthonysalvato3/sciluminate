@@ -406,6 +406,14 @@ export function journalsForDisease(diseaseId: number): string[] {
 // matched uploads. Mirrors the client's PaperSource.
 export type PaperSourceQuery = { diseaseId: number } | { collectionId: number };
 
+// Escape LIKE wildcards so a literal % or _ in a user query (e.g. "100%",
+// "COVID_19") matches itself instead of acting as a wildcard. Callers wrap the
+// result in their own %/_ and must pair each LIKE with ESCAPE '\'. The
+// backslash itself is escaped first so it can serve as the escape character.
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 // The unified rows behind the table and timeline views, for either source:
 // article metadata, cached citation count, and — for collections — the first
 // matched uploaded file per pmid (the copy a title click opens; same rule as
@@ -434,8 +442,9 @@ export function listPapers(
     : "cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash";
   let search = "";
   if (q) {
-    search = "WHERE (a.title LIKE ? OR a.abstract LIKE ?)";
-    params.push(`%${q}%`, `%${q}%`);
+    search = "WHERE (a.title LIKE ? ESCAPE '\\' OR a.abstract LIKE ? ESCAPE '\\')";
+    const like = `%${escapeLike(q)}%`;
+    params.push(like, like);
   }
   const rows = db
     .prepare(
@@ -751,13 +760,14 @@ export const bulkInsertCatalog = transaction((rows: CatalogSeed[]) => {
 
 // Autocomplete: match title/abbreviation, prefix matches first, then shortest title.
 export function searchCatalog(q: string, limit = 10): CatalogRow[] {
-  const like = `%${q}%`;
-  const prefix = `${q}%`;
+  const esc = escapeLike(q);
+  const like = `%${esc}%`;
+  const prefix = `${esc}%`;
   return db
     .prepare(
       `SELECT * FROM journal_catalog
-       WHERE title LIKE ? OR med_abbr LIKE ? OR iso_abbr LIKE ?
-       ORDER BY CASE WHEN title LIKE ? OR med_abbr LIKE ? THEN 0 ELSE 1 END, length(title)
+       WHERE title LIKE ? ESCAPE '\\' OR med_abbr LIKE ? ESCAPE '\\' OR iso_abbr LIKE ? ESCAPE '\\'
+       ORDER BY CASE WHEN title LIKE ? ESCAPE '\\' OR med_abbr LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, length(title)
        LIMIT ?`
     )
     .all(like, like, like, prefix, prefix, limit) as unknown as CatalogRow[];
