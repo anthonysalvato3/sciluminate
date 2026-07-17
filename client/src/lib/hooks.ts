@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { errorMessage } from "./format";
 
 // The given value, trailing `ms` behind its live counterpart.
@@ -24,6 +24,41 @@ export function usePrefersDark(): boolean {
     return () => mq.removeEventListener("change", onChange);
   }, []);
   return dark;
+}
+
+// A list can hold thousands of items; render them incrementally so the first
+// paint stays cheap. `shown` is the first PAGE_SIZE items, growing by a page
+// whenever the sentinel (rendered by the caller near the bottom, while
+// `hasMore`) scrolls into view — rootMargin preloads the next page before the
+// user hits the very end. A `resetKey` change (new source, search, reload)
+// snaps back to the first page.
+const PAGE_SIZE = 50;
+
+export function useIncrementalList<T>(items: T[], resetKey: string) {
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [resetKey]);
+
+  const shown = useMemo(() => items.slice(0, visibleCount), [items, visibleCount]);
+  const hasMore = visibleCount < items.length;
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) setVisibleCount((c) => c + PAGE_SIZE);
+      },
+      { rootMargin: "800px 0px" }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, items.length]);
+
+  return { shown, hasMore, sentinelRef };
 }
 
 // A module-level cache for useCachedFetch: one entry per key, invalidated when

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { errorMessage, formatAuthors } from "../lib/format";
+import { useIncrementalList } from "../lib/hooks";
 import { usePapers } from "../lib/papers";
 import type { AuthStatus, Paper, PaperSource } from "../types";
 import { PapersToolbar } from "./PapersToolbar";
@@ -9,11 +10,6 @@ import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
 
 type SortKey = "title" | "authors" | "journal" | "year" | "citations";
 type SortDir = "asc" | "desc";
-
-// A source can hold thousands of papers; render rows incrementally so the
-// first paint stays cheap (same treatment as the Timeline). Sorting still runs
-// over the full filtered set.
-const PAGE_SIZE = 50;
 
 // The sortable papers table, for either source. Collection rows carry a linked
 // PDF (title click opens it); topic rows have none, so the title opens PubMed.
@@ -52,14 +48,7 @@ export function PapersTable({
   } = usePapers(source, reloadToken);
   const [sortKey, setSortKey] = useState<SortKey>("year");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [actionError, setActionError] = useState<string | null>(null);
-  const sentinelRef = useRef<HTMLDivElement>(null);
-
-  // A new source or query starts from the top.
-  useEffect(() => {
-    setVisibleCount(PAGE_SIZE);
-  }, [key, search, reloadToken]);
 
   const sortedPapers = useMemo(() => {
     const dir = sortDir === "asc" ? 1 : -1;
@@ -86,23 +75,11 @@ export function PapersTable({
     });
   }, [visible, sortKey, sortDir]);
 
-  const shown = useMemo(() => sortedPapers.slice(0, visibleCount), [sortedPapers, visibleCount]);
-  const hasMore = visibleCount < sortedPapers.length;
-
-  // Grow the rendered slice as the sentinel near the bottom scrolls into view.
-  // rootMargin preloads the next page before the user hits the very end.
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el || !hasMore) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) setVisibleCount((c) => c + PAGE_SIZE);
-      },
-      { rootMargin: "800px 0px" }
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [hasMore, sortedPapers.length]);
+  // A new source or query starts from the top; re-sorting keeps scroll depth.
+  const { shown, hasMore, sentinelRef } = useIncrementalList(
+    sortedPapers,
+    `${key}|${search}|${reloadToken}`
+  );
 
   function toggleSort(next: SortKey) {
     if (next === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
