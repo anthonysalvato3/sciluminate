@@ -63,8 +63,18 @@ export async function storeBlobFromTemp(tmpPath: string): Promise<{ hash: string
   const hash = await sha256File(tmpPath);
   if (blobExists(hash)) {
     await fs.promises.unlink(tmpPath);
-  } else {
+    return { hash };
+  }
+  try {
     await fs.promises.rename(tmpPath, blobPath(hash));
+  } catch (err) {
+    // Concurrent identical uploads can race this rename. On Windows, renaming
+    // onto an existing blob overwrites — unless the winner's copy is already
+    // held open (import scan, download, AV), which fails with EPERM. The store
+    // is content-addressed, so if the blob exists now the bytes are already
+    // right: drop our redundant temp instead of failing the upload.
+    if (!blobExists(hash)) throw err;
+    await fs.promises.unlink(tmpPath).catch(() => {});
   }
   return { hash };
 }
