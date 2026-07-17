@@ -669,18 +669,6 @@ api.post(
   })
 );
 
-api.get("/status", (_req, res) => {
-  const counts = diseaseArticleCounts();
-  res.json({
-    diseases: listDiseases().map((d) => ({
-      id: d.id,
-      name: d.name,
-      last_polled_at: d.last_polled_at,
-      articleCount: counts[d.id] ?? 0,
-    })),
-  });
-});
-
 // ---------- settings ----------
 
 // Where other machines can reach this server, for the Settings sharing panel.

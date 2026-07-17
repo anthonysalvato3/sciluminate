@@ -83,10 +83,16 @@ function cacheTouch<T>(cache: FetchCache<T>, key: string, value: { token: number
   }
 }
 
-// Fetch-with-cache for view data. State is seeded from the cache so remounting
-// — e.g. flipping back to a tab — paints instantly instead of refetching and
-// re-showing a loading state. `data` is null until the *current* key's result
-// is available, so callers never see another key's data.
+// Fetch-with-cache for view data. `data` is null until the *current* key's
+// result is available, so callers never see another key's data.
+//
+// Everything the caller sees is derived at render time from the cache and
+// keyed state — not from state an effect updates one tick later. Deriving
+// fixes two flashes: switching sources used to render one frame with the old
+// `loading=false` and no data (an empty-state blink before the skeleton), and
+// returning to a cached source rendered one null frame before the cached data
+// appeared. A reload (same key, bumped token) still reports loading while the
+// previous data stays visible, exactly as before.
 export function useCachedFetch<T>(
   cache: FetchCache<T>,
   key: string,
@@ -97,35 +103,34 @@ export function useCachedFetch<T>(
     const hit = cache.get(key);
     return hit && hit.token === token ? hit.data : undefined;
   };
-  const [entry, setEntry] = useState<{ key: string; data: T } | null>(() => {
-    const hit = lookup();
-    return hit === undefined ? null : { key, data: hit };
-  });
-  const [loading, setLoading] = useState(() => lookup() === undefined);
-  const [error, setError] = useState<string | null>(null);
+  // Fetch results land in `entry` (a bare cache.set wouldn't re-render); it
+  // also keeps the current key's data alive if the LRU evicts it mid-view.
+  const [entry, setEntry] = useState<{ key: string; data: T } | null>(null);
+  // Errors are keyed by (key, token) so a stale one can't leak across a
+  // source switch, and bumping the token to retry clears it implicitly.
+  const [err, setErr] = useState<{ id: string; message: string } | null>(null);
+
+  const hit = lookup();
+  const data = entry && entry.key === key ? entry.data : hit !== undefined ? hit : null;
+  const error = err && err.id === `${key}:${token}` ? err.message : null;
+  const loading = hit === undefined && error == null;
 
   useEffect(() => {
-    setError(null);
-
-    // Serve an unchanged (same token) result from cache without a refetch.
     const hit = lookup();
     if (hit !== undefined) {
       cacheTouch(cache, key, { token, data: hit }); // mark most-recently-used
       setEntry({ key, data: hit });
-      setLoading(false);
       return;
     }
 
     let cancelled = false;
-    setLoading(true);
     fetcher()
       .then((res) => {
         if (cancelled) return;
         cacheTouch(cache, key, { token, data: res });
         setEntry({ key, data: res });
       })
-      .catch((e) => !cancelled && setError(errorMessage(e)))
-      .finally(() => !cancelled && setLoading(false));
+      .catch((e) => !cancelled && setErr({ id: `${key}:${token}`, message: errorMessage(e) }));
     return () => {
       cancelled = true;
     };
@@ -133,5 +138,5 @@ export function useCachedFetch<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, token]);
 
-  return { data: entry && entry.key === key ? entry.data : null, loading, error };
+  return { data, loading, error };
 }
