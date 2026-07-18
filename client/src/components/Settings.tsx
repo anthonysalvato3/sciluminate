@@ -1,30 +1,13 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
-import { errorMessage } from "../lib/format";
+import { errorMessage, round1 } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
+import { JournalManager } from "./JournalManager";
+import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
 import { Typeahead } from "./Typeahead";
-import type { AppSettings, Topic, Journal, JournalSearchResult, MeshSearchResult } from "../types";
-
-const SMALL_WORDS = new Set([
-  "a", "an", "and", "as", "at", "but", "by", "for", "in", "nor",
-  "of", "on", "or", "the", "to", "via", "vs", "with",
-]);
-
-// NLM stores titles in sentence case ("Cell metabolism"); show them title-cased
-// ("Cell Metabolism"). Words that already contain a capital (acronyms like HIV,
-// JAMA, or "(London,") are left untouched; small words stay lowercase mid-title.
-function titleCaseJournal(s: string): string {
-  return s
-    .split(" ")
-    .map((w, i) => {
-      if (!w || /[A-Z]/.test(w)) return w;
-      if (i > 0 && SMALL_WORDS.has(w.replace(/[^a-z]/g, ""))) return w;
-      return w.charAt(0).toUpperCase() + w.slice(1);
-    })
-    .join(" ");
-}
+import type { AppSettings, Topic, Journal, MeshSearchResult } from "../types";
 
 export function Settings({
   onDataChanged,
@@ -38,16 +21,18 @@ export function Settings({
   const [journals, setJournals] = useState<Journal[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  // False only until the first reload settles — the panels show skeletons
+  // instead of misleading "No journals yet." empty states and a form that pops
+  // in. Later reloads (after mutations) keep showing the current data.
+  const [loaded, setLoaded] = useState(false);
 
-  const [journalName, setJournalName] = useState("");
   const [topicQuery, setTopicQuery] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
-  // The journal warning depends on an article count fetched *before* the
-  // dialog opens, so the pending removal carries its message along.
-  const [journalToRemove, setJournalToRemove] = useState<{ journal: Journal; message: string } | null>(null);
+  // Journal add/remove lives in the JournalManager dialog.
+  const [managingJournals, setManagingJournals] = useState(false);
   const [topicToRemove, setTopicToRemove] = useState<number | null>(null);
 
   function reload() {
@@ -57,54 +42,11 @@ export function Settings({
         setTopics(d);
         setSettings(s);
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(e.message))
+      .finally(() => setLoaded(true));
   }
 
   useEffect(reload, []);
-
-  async function addJournal(name: string) {
-    setError(null);
-    const n = name.trim();
-    if (!n) return;
-    try {
-      await api.createJournal(n);
-      setJournalName("");
-      reload();
-      onDataChanged();
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }
-
-  async function askRemoveJournal(j: Journal) {
-    setError(null);
-    let count = 0;
-    try {
-      count = (await api.journalArticleCount(j.id)).count;
-    } catch {
-      /* if the count lookup fails, fall through with a generic warning */
-    }
-    const message =
-      count > 0
-        ? `This will remove its papers from Interests and permanently delete ${count} stored paper${
-            count === 1 ? "" : "s"
-          }. Papers saved in your Library are kept. This cannot be undone.`
-        : "Its papers will be removed from Interests. Papers saved in your Library are kept.";
-    setJournalToRemove({ journal: j, message });
-  }
-
-  async function removeJournal() {
-    if (!journalToRemove) return;
-    setJournalToRemove(null);
-    try {
-      const res = await api.deleteJournal(journalToRemove.journal.id);
-      reload();
-      onDataChanged();
-      onPapersRemoved(res.removedFromInterests);
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }
 
   // `name` is a MeSH heading — picked from the autocomplete, or typed and
   // submitted (the server validates it and rejects anything that isn't a real
@@ -188,54 +130,33 @@ export function Settings({
       <section className="panel">
         <h2>Journals</h2>
         <p className="hint">
-          Start typing to search journals, then pick one to add it by its official NLM
-          abbreviation (what PubMed reliably matches). The number is OpenAlex 2-yr citations
-          per article — an open stand-in for impact factor.
+          Papers from these journals feed your Interests topics. The number is OpenAlex 2-yr
+          citations per article — an open stand-in for impact factor.
         </p>
-        <form
-          className="inline-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            addJournal(journalName);
-          }}
-        >
-          <Typeahead<JournalSearchResult>
-            value={journalName}
-            onChange={setJournalName}
-            search={(q) => api.searchJournals(q).then((r) => r.results)}
-            onSelect={(r) => addJournal(r.abbr || r.title)}
-            getKey={(r) => r.issn || r.title}
-            placeholder="Search journals (e.g. lancet, n engl j med)…"
-            id="journal-typeahead"
-            renderItem={(r) => (
-              <>
-                <span className="ta-title">{titleCaseJournal(r.title)}</span>
-                <span className="ta-meta">
-                  {r.abbr && <span className="ta-abbr">{r.abbr}</span>}
-                  {r.metric != null && (
+        <button type="button" className="accent-btn" onClick={() => setManagingJournals(true)}>
+          Manage journals…
+        </button>
+        <ul className="list">
+          {!loaded ? (
+            [0, 1, 2].map((i) => <ListRowSkeleton key={i} w={["30%", "42%", "35%"][i]} pill />)
+          ) : (
+            <>
+              {journals.map((j) => (
+                <li key={j.id}>
+                  <span>{j.name}</span>
+                  {j.metric != null && (
                     <span
-                      className={`ta-metric${r.metric === 0 ? " zero" : ""}`}
+                      className={`ta-metric${j.metric === 0 ? " zero" : ""}`}
                       title="OpenAlex 2-yr citations per article"
                     >
-                      {r.metric}
+                      {round1(j.metric)}
                     </span>
                   )}
-                </span>
-              </>
-            )}
-          />
-          <button type="submit">Add</button>
-        </form>
-        <ul className="list">
-          {journals.map((j) => (
-            <li key={j.id}>
-              <span>{j.name}</span>
-              <button className="link-btn danger" onClick={() => askRemoveJournal(j)}>
-                Remove
-              </button>
-            </li>
-          ))}
-          {journals.length === 0 && <li className="muted">No journals yet.</li>}
+                </li>
+              ))}
+              {journals.length === 0 && <li className="muted">No journals yet.</li>}
+            </>
+          )}
         </ul>
       </section>
 
@@ -267,25 +188,32 @@ export function Settings({
           <button type="submit">Add</button>
         </form>
         <ul className="list">
-          {topics.map((d) => (
-            <li key={d.id}>
-              <span>
-                <strong>{d.name}</strong>
-                <code className="term">{d.term}</code>
-              </span>
-              <button className="link-btn danger" onClick={() => setTopicToRemove(d.id)}>
-                Remove
-              </button>
-            </li>
-          ))}
-          {topics.length === 0 && <li className="muted">No topics yet.</li>}
+          {!loaded ? (
+            [0, 1].map((i) => <ListRowSkeleton key={i} w={["55%", "40%"][i]} />)
+          ) : (
+            <>
+              {topics.map((d) => (
+                <li key={d.id}>
+                  <span>
+                    <strong>{d.name}</strong>
+                    <code className="term">{d.term}</code>
+                  </span>
+                  <button className="link-btn danger" onClick={() => setTopicToRemove(d.id)}>
+                    Remove
+                  </button>
+                </li>
+              ))}
+              {topics.length === 0 && <li className="muted">No topics yet.</li>}
+            </>
+          )}
         </ul>
       </section>
 
       <section className="panel">
         <h2>Polling & NCBI</h2>
         {savedMsg && <Banner kind="success" message={savedMsg} onDismiss={() => setSavedMsg(null)} />}
-        {settings && (
+        {!loaded && <StackedFormSkeleton />}
+        {loaded && settings && (
           <form className="stacked-form" onSubmit={saveSettings}>
             <label>
               Scheduled polling
@@ -345,7 +273,13 @@ export function Settings({
 
       <section className="panel">
         <h2>Sharing</h2>
-        {settings &&
+        {!loaded && (
+          <p className="hint" aria-busy="true" aria-label="Loading sharing info">
+            <SkeletonBar w="85%" h={12} style={{ marginBottom: 6 }} />
+            <SkeletonBar w="60%" h={12} />
+          </p>
+        )}
+        {loaded && settings &&
           (settings.share_urls.length === 0 ? (
             <p className="hint">
               Only this machine can connect right now. To let others view your server, set{" "}
@@ -394,14 +328,14 @@ export function Settings({
           ))}
       </section>
 
-      <ConfirmDialog
-        open={journalToRemove != null}
-        title={journalToRemove ? `Remove "${journalToRemove.journal.name}"?` : ""}
-        message={journalToRemove?.message ?? ""}
-        confirmLabel="Remove"
-        danger
-        onConfirm={removeJournal}
-        onCancel={() => setJournalToRemove(null)}
+      <JournalManager
+        open={managingJournals}
+        onClose={() => setManagingJournals(false)}
+        onCommitted={(papersRemoved, removalsHappened) => {
+          reload();
+          onDataChanged();
+          if (removalsHappened) onPapersRemoved(papersRemoved);
+        }}
       />
       <ConfirmDialog
         open={topicToRemove != null}
