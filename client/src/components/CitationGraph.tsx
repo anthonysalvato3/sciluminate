@@ -69,14 +69,30 @@ export function CitationGraph({
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
   const [size, setSize] = useState({ width: 800, height: 600 });
 
-  // Stable fetch key: the same source object is re-created each render.
+  // Stable fetch key: the same source object is re-created each render. The
+  // search is part of it — it selects a different set of papers server-side.
   const key = sourceKey(source);
-  const { data, loading, error } = useCachedFetch(graphCache, key, reloadToken, () =>
-    api.getGraph(source)
+  const { search, deselected } = filters;
+  const {
+    data: fetched,
+    loading,
+    error,
+  } = useCachedFetch(graphCache, `${key}:${search}`, reloadToken, () =>
+    api.getGraph(source, search || undefined)
   );
 
+  // Keep the last result for THIS source on screen while a search refetch is in
+  // flight, so typing narrows the graph in place instead of blanking the canvas
+  // to the loading message on every keystroke (the papers list does the same).
+  const lastForSource = useRef<{ key: string; data: GraphResponse } | null>(null);
+  if (fetched) lastForSource.current = { key, data: fetched };
+  const data = fetched ?? (lastForSource.current?.key === key ? lastForSource.current.data : null);
+  // Only a load with nothing to show counts as loading; a search refetch keeps
+  // the previous graph on screen, so it must not fall back to the empty state.
+  const showLoading = loading && data == null;
+
   // Close the paper modal when the graph underneath it changes.
-  useEffect(() => setSelected(null), [key, reloadToken]);
+  useEffect(() => setSelected(null), [key, search, reloadToken]);
 
   // Keep the canvas sized to its container.
   useEffect(() => {
@@ -120,11 +136,17 @@ export function CitationGraph({
     return { nodes, links };
   }, [data, allNodes, hideUnconnected]);
 
-  // Community detection on the *active* subgraph (papers passing the threshold).
-  // Recomputes when the data or the debounced threshold changes.
+  // Community detection on the *active* subgraph (papers passing the threshold
+  // and the journal filter). Recomputes when the data, the debounced threshold,
+  // or the journal selection changes. Filtering here rather than in graphData
+  // keeps it out of the simulation set, so narrowing never restarts the layout.
   const clustering = useMemo<ClusteringResult>(() => {
     if (!data) return { byPmid: new Map(), clusters: [] };
-    const active = graphData.nodes.filter((n) => (n.citationCount as number) >= activeMin);
+    const active = graphData.nodes.filter(
+      (n) =>
+        (n.citationCount as number) >= activeMin &&
+        !deselected.has(String(n.journal_name ?? ""))
+    );
     return clusterGraph(
       active.map((n) => ({
         pmid: n.pmid,
@@ -133,7 +155,7 @@ export function CitationGraph({
       })),
       data.edges
     );
-  }, [data, graphData, activeMin]);
+  }, [data, graphData, activeMin, deselected]);
 
   // Cluster ids/membership change on each recompute, so old visibility toggles no
   // longer map — reset them whenever the clustering changes.
@@ -213,9 +235,14 @@ export function CitationGraph({
 
   return (
     <div className="graph-wrap">
-      {/* No search or journal dropdown yet: /api/graph accepts neither, and
-          filtering its payload client-side would disagree with the table. */}
-      <PaperFilters filters={filters} searchable={false} maxCitations={maxCitations}>
+      {/* Full filter row: /api/graph now takes the same `q` as /api/papers and
+          returns journal names, so all three views filter identically. */}
+      <PaperFilters
+        filters={filters}
+        journals={data?.journals ?? []}
+        maxCitations={maxCitations}
+        loading={loading}
+      >
         <label className="graph-check">
           <input
             type="checkbox"
@@ -241,7 +268,7 @@ export function CitationGraph({
 
       <div className="graph-body">
         <div className="graph-canvas" ref={wrapRef}>
-          {loading ? (
+          {showLoading ? (
             <div className="empty">Loading citation data… (first load fetches from NIH iCite)</div>
           ) : !data || data.nodes.length === 0 ? (
             <div className="empty">No papers yet.</div>

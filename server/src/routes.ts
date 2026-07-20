@@ -396,7 +396,10 @@ api.get(
   asyncHandler(async (req, res) => {
     const source = parseSource(req);
     if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
-    const papers = graphPapersForSource(source);
+    // Same free-text query the papers list takes, resolved by the same SQL, so
+    // a search selects the same papers whichever view is showing.
+    const q = req.query.q ? String(req.query.q) : undefined;
+    const papers = graphPapersForSource(source, q);
     const pmids = papers.map((p) => p.pmid);
     const inSet = new Set(pmids);
 
@@ -415,6 +418,7 @@ api.get(
       pmid: p.pmid,
       title: p.title,
       url: p.url,
+      journal_name: p.journal_name ?? "",
       citationCount: cites.get(p.pmid)?.citation_count ?? 0,
       year: /^\d{4}/.test(p.pub_date) ? Number(p.pub_date.slice(0, 4)) : null,
       file_id: p.file_id,
@@ -430,7 +434,9 @@ api.get(
       }
     }
 
-    const body: GraphResponse = { nodes, edges };
+    // The full journal list for the source, deliberately not derived from the
+    // (possibly search-narrowed) nodes: the chips must not vanish as you type.
+    const body: GraphResponse = { nodes, edges, journals: journalsForSource(source) };
     res.json(body);
   })
 );
