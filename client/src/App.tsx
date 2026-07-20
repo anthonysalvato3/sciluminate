@@ -11,8 +11,7 @@ import { Settings } from "./components/Settings";
 import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
 import { Banner } from "./components/Banner";
-
-type ViewMode = "table" | "timeline" | "graph";
+import { ViewSwitcher, type ViewMode } from "./components/ViewSwitcher";
 
 export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -280,26 +279,7 @@ export default function App() {
           ) : (
             <>
               {showViewControls && (
-                <div className="view-toggle" role="group" aria-label="View mode">
-                  <button
-                    className={viewMode === "table" ? "active" : ""}
-                    onClick={() => setViewMode("table")}
-                  >
-                    Papers
-                  </button>
-                  <button
-                    className={viewMode === "timeline" ? "active" : ""}
-                    onClick={() => setViewMode("timeline")}
-                  >
-                    Timeline
-                  </button>
-                  <button
-                    className={viewMode === "graph" ? "active" : ""}
-                    onClick={() => setViewMode("graph")}
-                  >
-                    Graph
-                  </button>
-                </div>
+                <ViewSwitcher viewMode={viewMode} onChange={setViewMode} />
               )}
               {/* Refresh polls PubMed for the active topic; irrelevant to Library. */}
               {!showSettings && inDiscover && activeTopic && (

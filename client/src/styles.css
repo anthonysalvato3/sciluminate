@@ -58,9 +58,13 @@ body {
   font-size: 24px;
 }
 
+/* Wraps so a narrow viewport (or a future fourth view) pushes controls onto a
+   second line instead of squeezing them past the edge. */
 .header-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 12px;
 }
 
@@ -726,9 +730,17 @@ code {
   cursor: pointer;
 }
 
-.view-toggle button.active {
+/* Radix ToggleGroup marks the pressed item with data-state, not a class. */
+.view-toggle button[data-state="on"] {
   background: var(--accent);
   color: #fff;
+}
+
+/* Roving focus makes the group a single tab stop, so the ring on the focused
+   item is the only cue for where keyboard focus actually is. */
+.view-toggle button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* ---------- citation graph ---------- */
